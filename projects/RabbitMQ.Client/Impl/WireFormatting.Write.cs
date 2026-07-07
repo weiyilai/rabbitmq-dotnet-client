@@ -342,19 +342,24 @@ namespace RabbitMQ.Client.Impl
             int bytesWritten = 0;
             if (!string.IsNullOrEmpty(val))
             {
+                int byteCount = UTF8.GetByteCount(val);
+                if (byteCount > byte.MaxValue)
+                {
+                    return ThrowArgumentTooLong(byteCount);
+                }
+
                 unsafe
                 {
-
                     ref byte valDestination = ref destination.GetOffset(1);
                     fixed (char* chars = val)
                     fixed (byte* bytes = &valDestination)
                     {
-                        bytesWritten = UTF8.GetBytes(chars, val!.Length, bytes, byte.MaxValue);
+                        bytesWritten = UTF8.GetBytes(chars, val!.Length, bytes, byteCount);
                     }
                 }
             }
 
-            destination = unchecked((byte)bytesWritten);
+            destination = (byte)bytesWritten;
             return bytesWritten + 1;
         }
 
