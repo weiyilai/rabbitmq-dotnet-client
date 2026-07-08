@@ -129,7 +129,7 @@ namespace Test.Unit
             int bytesNeeded = WireFormatting.GetTableByteCount(t);
             byte[] bytes = new byte[bytesNeeded];
 
-            Assert.Throws<ArgumentException>(() => WireFormatting.WriteTable(ref bytes.GetStart(), t));
+            Assert.Throws<ArgumentOutOfRangeException>(() => WireFormatting.WriteTable(ref bytes.GetStart(), t));
         }
 
         [Fact]

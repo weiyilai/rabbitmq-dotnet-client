@@ -342,19 +342,31 @@ namespace RabbitMQ.Client.Impl
             int bytesWritten = 0;
             if (!string.IsNullOrEmpty(val))
             {
+                // GetMaxByteCount is cheap bit arithmetic that yields an upper bound
+                // on the encoded size. Only fall back to the O(n) exact count when
+                // that upper bound exceeds the shortstr maximum.
+                int byteCount = UTF8.GetMaxByteCount(val!.Length);
+                if (byteCount > byte.MaxValue)
+                {
+                    byteCount = UTF8.GetByteCount(val);
+                    if (byteCount > byte.MaxValue)
+                    {
+                        return ThrowArgumentTooLong(byteCount);
+                    }
+                }
+
                 unsafe
                 {
-
                     ref byte valDestination = ref destination.GetOffset(1);
                     fixed (char* chars = val)
                     fixed (byte* bytes = &valDestination)
                     {
-                        bytesWritten = UTF8.GetBytes(chars, val!.Length, bytes, byte.MaxValue);
+                        bytesWritten = UTF8.GetBytes(chars, val!.Length, bytes, byteCount);
                     }
                 }
             }
 
-            destination = unchecked((byte)bytesWritten);
+            destination = (byte)bytesWritten;
             return bytesWritten + 1;
         }
 
