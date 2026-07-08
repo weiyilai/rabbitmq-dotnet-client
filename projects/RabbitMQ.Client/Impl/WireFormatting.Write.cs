@@ -342,10 +342,17 @@ namespace RabbitMQ.Client.Impl
             int bytesWritten = 0;
             if (!string.IsNullOrEmpty(val))
             {
-                int byteCount = UTF8.GetByteCount(val);
+                // GetMaxByteCount is cheap bit arithmetic that yields an upper bound
+                // on the encoded size. Only fall back to the O(n) exact count when
+                // that upper bound exceeds the shortstr maximum.
+                int byteCount = UTF8.GetMaxByteCount(val!.Length);
                 if (byteCount > byte.MaxValue)
                 {
-                    return ThrowArgumentTooLong(byteCount);
+                    byteCount = UTF8.GetByteCount(val);
+                    if (byteCount > byte.MaxValue)
+                    {
+                        return ThrowArgumentTooLong(byteCount);
+                    }
                 }
 
                 unsafe
