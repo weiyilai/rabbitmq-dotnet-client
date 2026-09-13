@@ -43,21 +43,29 @@ The narrowing to 406 was justified by the claim that `basic.consume` is refused 
 - an invalid `x-stream-offset` argument, on a stream queue or on a quorum queue
 - an `x-priority` argument of the wrong type: `expected integer, got longstr`
 
-So narrowing to 406 does not remove the livelock class, it selects the reply code that triggers it. Reproduced end to end: two autoAck consumers on one channel, the queue recreated out of band as a stream, then the connection killed. `main` recovers in one attempt; the branch never recovers.
+So narrowing to 406 does not remove the livelock class, it selects the reply code that triggers it. Reproduced end to end: two autoAck consumers on one channel, the queue recreated out of band as a stream, then the connection killed. The branch never recovers.
 
-**A handler cannot say "handled, do not retry".** The delegates return bare `Task`, so a handler that repairs the entity and returns looks identical to one that only logged. With the classification applied after the handler, a log-only handler on a non-406 refusal therefore fails the attempt every time, and since the retry loop has no cap the connection flaps every `NetworkRecoveryInterval` indefinitely. Measured: `main` recovers in one attempt, the branch was still rebuilding after 20 seconds and three attempts. No configuration restores skip-and-continue, because narrowing the handler's condition just routes the same exception to `HandleTopologyRecoveryException`, which rethrows for every `OperationInterruptedException` anyway.
+**Read the `main` side of that comparison carefully, because an earlier revision of this document stated it as "`main` recovers in one attempt", and that is not what happens.** With a handler configured, `main` swallows the refusal without consulting the classification at all (`AutorecoveringConnection.Recovery.cs`, the handler branch in each entity loop), so it completes one attempt, skips the consumers it could not recover, and fires `RecoverySucceededAsync` anyway. The consumers are **gone**. That is #1995 itself. So the honest comparison is "silently loses the consumers once" against "never recovers and flaps forever" - the branch is still worse, because a livelock also denies service to everything else on the connection, but `main` is not a working baseline and must not be quoted as one.
+
+**A handler cannot say "handled, do not retry".** The delegates return bare `Task`, so a handler that repairs the entity and returns looks identical to one that only logged. With the classification applied after the handler, a log-only handler on a non-406 refusal therefore fails the attempt every time, and since the retry loop has no cap the connection flaps every `NetworkRecoveryInterval` indefinitely. Measured: the branch was still rebuilding after 20 seconds and three attempts, where `main` completed one attempt (having skipped the entity, per the caveat above). No configuration restores skip-and-continue, because narrowing the handler's condition just routes the same exception to `HandleTopologyRecoveryException`, which rethrows for every `OperationInterruptedException` anyway.
 
 Two things follow for whoever picks #1995 up:
 
 - Fixing it well needs at least one of a **retry cap with backoff** and a **way for a handler to signal that it handled the failure**. Neither exists today.
 - The verdict cannot be a pure function of the reply code, because the same code means different things depending on whether the channel is shared.
 
+**The first of those is contested, and a fair reading of the evidence is that it is argued rather than measured.** The counter-argument is that skip-and-continue is already `main`'s behaviour on the handler path, so a fix that adds retries *only* for the narrow unknown-fate class - an `AlreadyClosedException` whose operation was never transmitted, where the entity is definitely un-recovered - would never retry a refusal a handler had seen, and so could not livelock on one. That is not obviously wrong. What makes it doubtful is the shared consumer channel again: a channel-level refusal closes that channel whatever the client classifies it as, so the sibling consumers behind it raise exactly that unknown-fate `AlreadyClosedException`, get retried, and meet the original refusal again. The livelock would then be reached through the narrow class rather than avoided by narrowing to it.
+
+That reasoning has **not** been measured, unlike the two regressions above, so treat it as the reason to test a narrow fix rather than as a reason to reject one. Whoever picks #1995 up should build the shared-channel case first and find out.
+
 ## Consequences for handler authors
 
-Recorded in the public XML docs on `TopologyRecoveryExceptionHandler`, and worth knowing here:
+**This document is the only place these are written down.** An earlier revision said they were "recorded in the public XML docs on `TopologyRecoveryExceptionHandler`". They were, on the #2015 branch, and the revert in `258d28223` deleted them along with the code - so that sentence became false the moment it landed. There is no `<remarks>` on that type mentioning either point today.
 
 - A handler must be **idempotent**. The attempt can be retried by the no-handler path on a later entity, so the handler can be invoked again for the same one.
 - There is no way for a handler to report "handled, do not retry": the delegates return bare `Task`. Throwing from a handler forces a retry directly, which is the long-standing explicit way to ask for one.
+
+Whether to restore them as XML documentation is worth deciding separately: both are contracts on a public type, and a handler author has no reason to read `docs/internal/`.
 
 ## Known gaps
 
